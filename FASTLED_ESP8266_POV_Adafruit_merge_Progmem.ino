@@ -3,11 +3,13 @@
 //Using #include graphicswithprogmem.h and imageinitwithprogmem in void setup, the poi contiually restart. 
 //Seeking help to store patterns in flash memory and increase number of patterns stored in flash.
 
+//Tested on WEMOS D1 MINI as is, and it is working fine, with storing in flash
+
 #include <PGMSPACE.h>
 #include <Arduino.h>
 #include "FastLED.h"
 #define NUM_LEDS 36
-#define BRIGHTNESS 10
+#define BRIGHTNESS 180
 
 CRGB leds[NUM_LEDS];
 // #include <SPI.h> // Enable this line on Pro Trinket
@@ -29,38 +31,30 @@ CRGB leds[NUM_LEDS];
     __result;                                                                  \
 }))
 
-
-
-
 typedef uint16_t line_t; // Bigger images OK on other boards
 
-
 //Include one of these, but make sure to include the matching part in void setup.
-#include "graphicswithProgmem.h"; //stores patterns using progmem but causes board to constantly restart
+#include "graphicswithProgmem.h"; //stores patterns using progmem but causes board to constantly restart // In D1 works fine!
 //#include "graphicsNoprogmem.h";   //works but does not store in flash, see void setup and ccomment out imageinit or imageinitwithprogmem
 
-
-#define DATA_PIN  D2
-#define CLOCK_PIN D1
-
-
+#define DATA_PIN  D2 // on WEMOS D1 mini
+#define CLOCK_PIN D1 // on WEMOS D1 mini
 
 boolean autoCycle = true; // Set to true to cycle images by default
 #define CYCLE_TIME 6      // Time, in seconds, between auto-cycle images
-
 
 void     imageInit(void);
 void     imageInitwithProgmem(void);
 
 
 void setup() {
+  FastLED.setBrightness(BRIGHTNESS);
   FastLED.addLeds<APA102, DATA_PIN, CLOCK_PIN, RGB, DATA_RATE_MHZ(12)>(leds, NUM_LEDS);
   FastLED.show(); // before measuring battery
   
    // modify this part along with the #include graphics file part above
    // imageInitwithProgmem();    //use with graphicwithProgmem.h  <<<<<<<<<<<<<<<<<<<<<<<<<include this line and comment out imaaginit or imagewithprogmem.    
       imageInit();               //use with graphicsNoprogmem.h
-
 
 }
 // GLOBAL STATE STUFF ------------------------------------------------------
