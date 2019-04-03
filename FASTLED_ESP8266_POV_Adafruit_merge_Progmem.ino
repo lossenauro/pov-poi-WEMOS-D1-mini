@@ -1,15 +1,54 @@
+#include <IRremoteESP8266.h>
+#include <IRrecv.h>
+#include <IRutils.h>
+const uint16_t kRecvPin = D3;
+
 //This sketch is taking Adafruit's Supernova Poi code and is modified to use FastLed with ESP8266. 
 //Using #include graphicsNoprogmem.h and using imageinit() in void setup, the poi work but store patterns in RAM, limiting number of patterns. 
 //Using #include graphicswithprogmem.h and imageinitwithprogmem in void setup, the poi contiually restart. 
 //Seeking help to store patterns in flash memory and increase number of patterns stored in flash.
 
-//Tested on WEMOS D1 MINI as is, and it is working fine, with storing in flash
-
 #include <PGMSPACE.h>
 #include <Arduino.h>
 #include "FastLED.h"
 #define NUM_LEDS 36
-#define BRIGHTNESS 180
+#define BRIGHTNESS 10
+
+typedef uint16_t line_t;
+
+//#define CYCLE_TIME 6      // Time, in seconds, between auto-cycle images
+boolean autoCycle = true; // Set to true to cycle images by default
+// #define CYCLE_TIME 15     // Time, in seconds, between auto-cycle images
+uint32_t CYCLE_TIME = 14; // Time, in seconds, between auto-cycle images
+#define kRecvPin D3
+IRrecv irrecv(kRecvPin);
+decode_results results;  // Somewhere to store the results
+
+//   Button       Code         Button  Code
+//   -----------  ------       ------  -----
+//   *            FF6897       0:      FF9867
+//   #            FFB04F       1:      FFA25D
+//                             2:      FF629D 
+//                             3:      FFE21D
+//   OK:          FF38C7       4:      FF22DD
+//   UP:          FF18E7       5:      FF02FD
+//   DOWN:        FF4AB5       6:      FFC23D
+//   LEFT:        FF10EF       7:      FFE01F
+//   RIGHT:       FF5AA5       8:      FFA857
+//                             9:      FF906F  
+#define BTN_BRIGHT_UP    0xFFB04F //   #
+#define BTN_BRIGHT_DOWN  0xFF6897 //   *
+#define BTN_RESTART      0xFF22DD //   4
+#define BTN_BATTERY      0xFF38C7 //   ok
+#define BTN_FASTER       0xFF18E7 //   UP
+#define BTN_SLOWER       0xFF4AB5 //   DOWN
+#define BTN_OFF          0xFFA857 //   8
+#define BTN_PATTERN_PREV 0xFF10EF //   LEFT
+#define BTN_PATTERN_NEXT 0xFF5AA5 //   RIGHT
+#define BTN_AUTOPLAY     0xFFA25D //   2
+#define BTN_NONE         -1
+
+
 
 CRGB leds[NUM_LEDS];
 // #include <SPI.h> // Enable this line on Pro Trinket
@@ -31,35 +70,45 @@ CRGB leds[NUM_LEDS];
     __result;                                                                  \
 }))
 
-typedef uint16_t line_t; // Bigger images OK on other boards
+
+
+
+//typedef uint16_t line_t; // Bigger images OK on other boards
+
 
 //Include one of these, but make sure to include the matching part in void setup.
-#include "graphicswithProgmem.h"; //stores patterns using progmem but causes board to constantly restart // In D1 works fine!
+#include "graphicswithProgmem.h"; //stores patterns using progmem but causes board to constantly restart <<<<< no, it is not in WEMOS d1 mini
 //#include "graphicsNoprogmem.h";   //works but does not store in flash, see void setup and ccomment out imageinit or imageinitwithprogmem
 
-#define DATA_PIN  D2 // on WEMOS D1 mini
-#define CLOCK_PIN D1 // on WEMOS D1 mini
 
-boolean autoCycle = true; // Set to true to cycle images by default
-#define CYCLE_TIME 6      // Time, in seconds, between auto-cycle images
+#define DATA_PIN  D2
+#define CLOCK_PIN D1
 
-void     imageInit(void);
+void     imageInit(void),
+         IRinterrupt(void); // TRY IR
 void     imageInitwithProgmem(void);
 
 
 void setup() {
+
+
+  
   FastLED.setBrightness(BRIGHTNESS);
-  FastLED.addLeds<APA102, DATA_PIN, CLOCK_PIN, RGB, DATA_RATE_MHZ(12)>(leds, NUM_LEDS);
+  FastLED.addLeds<APA102, DATA_PIN, CLOCK_PIN, BGR, DATA_RATE_MHZ(12)>(leds, NUM_LEDS);
   FastLED.show(); // before measuring battery
   
    // modify this part along with the #include graphics file part above
-   // imageInitwithProgmem();    //use with graphicwithProgmem.h  <<<<<<<<<<<<<<<<<<<<<<<<<include this line and comment out imaaginit or imagewithprogmem.    
-      imageInit();               //use with graphicsNoprogmem.h
+   // imageInitwithProgmem();    //use with graphicwithProgmem.h  <<<<<<<<<<<<<<<<<<<<<<<<<include this line and comment out imaaginit or imagewithprogmem.    // NO-NO! Use as is
+      imageInit();               //use with graphicsNoprogmem.h  <<<<<<<<<<<  NO-NO! Use as is
+
+  // attachInterrupt(1, IRinterrupt, CHANGE); // IR remote interrupt
+  irrecv.enableIRIn(); // Start the receiver
 
 }
 // GLOBAL STATE STUFF ------------------------------------------------------
 
-uint32_t lastImageTime = 0L; // Time of last image change
+uint32_t lastImageTime = 0L, // Time of last image change
+         lastLineTime  = 0L;
 uint8_t  imageNumber   = 0,  // Current image being displayed
          imageType,          // Image type: PALETTE[1,4,8] or TRUECOLOR
         *imagePalette,       // -> palette data in PROGMEM
@@ -68,6 +117,22 @@ uint8_t  imageNumber   = 0,  // Current image being displayed
 line_t   imageLines,         // Number of lines in active image
          imageLine;          // Current line number in image
 
+volatile uint16_t irCode = BTN_NONE; // Last valid IR code received TRY IR
+const uint8_t PROGMEM brightness[] = {15, 31, 63, 127, 254};
+uint8_t bLevel = sizeof(brightness) - 1;
+
+// Microseconds per line for various speed settings
+const uint16_t PROGMEM lineTable[] = {
+  1000000L /  375,
+  1000000L /  472,
+  1000000L /  595,
+  1000000L /  750,
+  1000000L /  945,
+  1000000L / 1191,
+  1000000L / 1500
+};
+uint8_t  lineIntervalIndex = 3;
+uint16_t lineInterval      = 1000000L / 750;
 
 void imageInit() { // Works with graphics.h but does not read from PROGMEM
   imageType    = images[imageNumber].type;
@@ -83,7 +148,6 @@ void imageInit() { // Works with graphics.h but does not read from PROGMEM
   else if(imageType == PALETTE4) memcpy_P(palette, imagePalette, 16 * 3);
   lastImageTime = millis(); // Save time of image init for next auto-cycle
 }
-
 
 void imageInitwithProgmem() { // this version is not working on ESP8266 but is used to read from PROGMEM 
   imageType    = pgm_read_byte(&images[imageNumber].type);
@@ -102,6 +166,11 @@ void imageInitwithProgmem() { // this version is not working on ESP8266 but is u
 
 void nextImage(void) {
   if(++imageNumber >= NUM_IMAGES) imageNumber = 0;
+  imageInit();
+}
+
+void prevImage(void) {
+  imageNumber = imageNumber ? imageNumber - 1 : NUM_IMAGES - 1;
   imageInit();
 }
 
@@ -142,7 +211,7 @@ void loop() {
       break;
     }
 
-#if 0 // Yep, demo images need ALL THE SPACE (see comment above)
+//#if 0 // Yep, demo images need ALL THE SPACE (see comment above)
     case PALETTE8: { // 8-bit (256 color) PROGMEM-palette-based image
       uint16_t  o;
       uint8_t   pixelNum,
@@ -168,14 +237,79 @@ void loop() {
       }
       break;
     }
-#endif
+//#endif
+  }
+ if(++imageLine >= imageLines) imageLine = 0; // Next scanline, wrap around
+  IRinterrupt();
+  while(((t = micros()) - lastLineTime) < lineInterval) {
+    if(results.value != BTN_NONE) {
+      //if(!FastLED.getBrightness()) { // If strip is off...
+        // Set brightness to last level
+      //  FastLED.setBrightness(brightness[bLevel]);
+        // and ignore button press (don't fall through)
+        // effectively, first press is 'wake'
+      //} else 
+      {
+        switch(results.value) {
+         case BTN_BRIGHT_UP:
+          if(bLevel < (sizeof(brightness) - 1))
+            FastLED.setBrightness(brightness[++bLevel]);
+          break;
+         case BTN_BRIGHT_DOWN:
+          if(bLevel)
+            FastLED.setBrightness(brightness[--bLevel]);
+          break;
+         case BTN_FASTER:
+          CYCLE_TIME++;
+          if(lineIntervalIndex < (sizeof(lineTable) / sizeof(lineTable[0]) - 1))
+           lineInterval = lineTable[++lineIntervalIndex];
+          break;
+         case BTN_SLOWER:
+         if(CYCLE_TIME > 0) CYCLE_TIME--;
+          if(lineIntervalIndex)
+           lineInterval = lineTable[--lineIntervalIndex];
+          break;
+         case BTN_RESTART:
+          imageNumber = 0;
+          imageInit();
+          break;
+         case BTN_OFF:
+          FastLED.setBrightness(0);
+          break;
+         case BTN_PATTERN_PREV:
+          prevImage();
+          break;
+         case BTN_PATTERN_NEXT:
+          nextImage();
+          break;
+         case BTN_AUTOPLAY:
+          autoCycle = !autoCycle;
+          break;
+        }
+      }
+      results.value = BTN_NONE;
+    }
   }
 
+
     FastLED.show(); // Refresh LEDs
-#if !defined(LED_DATA_PIN) && !defined(LED_CLOCK_PIN)
-  delayMicroseconds(900);  // Because hardware SPI is ludicrously fast
-#endif
-  if(++imageLine >= imageLines) imageLine = 0; // Next scanline, wrap around
+    lastLineTime = t;
+    
+//#if !defined(LED_DATA_PIN) && !defined(LED_CLOCK_PIN)
+//  delayMicroseconds(900);  // Because hardware SPI is ludicrously fast
+//#endif
+//if(++imageLine >= imageLines) imageLine = 0; // Next scanline, wrap around
 }
 
 
+
+
+
+void IRinterrupt() {
+ 
+  if (irrecv.decode(&results)) {
+//  Serial.println(results.value, HEX); // not in esp8266
+    serialPrintUint64(results.value, HEX);
+    irrecv.resume(); // Receive the next value
+  }
+}
