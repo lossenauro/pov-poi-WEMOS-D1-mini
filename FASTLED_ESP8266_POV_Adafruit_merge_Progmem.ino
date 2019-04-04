@@ -1,25 +1,21 @@
-#include <IRremoteESP8266.h>
-#include <IRrecv.h>
-#include <IRutils.h>
-const uint16_t kRecvPin = D3;
-
 //This sketch is taking Adafruit's Supernova Poi code and is modified to use FastLed with ESP8266. 
 //Using #include graphicsNoprogmem.h and using imageinit() in void setup, the poi work but store patterns in RAM, limiting number of patterns. 
 //Using #include graphicswithprogmem.h and imageinitwithprogmem in void setup, the poi contiually restart. 
 //Seeking help to store patterns in flash memory and increase number of patterns stored in flash.
 
+#include <IRremoteESP8266.h>
+#include <IRrecv.h>
+#include <IRutils.h>
+const uint16_t kRecvPin = D3;
 #include <PGMSPACE.h>
 #include <Arduino.h>
 #include "FastLED.h"
 #define NUM_LEDS 36
-#define BRIGHTNESS 10
 
 typedef uint16_t line_t;
 
-//#define CYCLE_TIME 6      // Time, in seconds, between auto-cycle images
 boolean autoCycle = true; // Set to true to cycle images by default
-// #define CYCLE_TIME 15     // Time, in seconds, between auto-cycle images
-uint32_t CYCLE_TIME = 14; // Time, in seconds, between auto-cycle images
+uint8_t CYCLE_TIME = 10; // Time, in seconds, between auto-cycle images
 #define kRecvPin D3
 IRrecv irrecv(kRecvPin);
 decode_results results;  // Somewhere to store the results
@@ -38,17 +34,17 @@ decode_results results;  // Somewhere to store the results
 //                             9:      FF906F  
 #define BTN_BRIGHT_UP    0xFFB04F //   #
 #define BTN_BRIGHT_DOWN  0xFF6897 //   *
-#define BTN_RESTART      0xFF22DD //   4
-#define BTN_BATTERY      0xFF38C7 //   ok
+#define BTN_RESTART      0xFF629D //   2
+#define BTN_BATTERY      0xFF9867 //   0
 #define BTN_FASTER       0xFF18E7 //   UP
 #define BTN_SLOWER       0xFF4AB5 //   DOWN
 #define BTN_OFF          0xFFA857 //   8
 #define BTN_PATTERN_PREV 0xFF10EF //   LEFT
 #define BTN_PATTERN_NEXT 0xFF5AA5 //   RIGHT
-#define BTN_AUTOPLAY     0xFFA25D //   2
+#define BTN_AUTOPLAY     0xFF38C7 //   ok
+#define BTN_CYCLE_DOWN   0xFF22DD //   4
+#define BTN_CYCLE_UP     0xFFC23D //   6
 #define BTN_NONE         -1
-
-
 
 CRGB leds[NUM_LEDS];
 // #include <SPI.h> // Enable this line on Pro Trinket
@@ -70,16 +66,9 @@ CRGB leds[NUM_LEDS];
     __result;                                                                  \
 }))
 
-
-
-
-//typedef uint16_t line_t; // Bigger images OK on other boards
-
-
 //Include one of these, but make sure to include the matching part in void setup.
 #include "graphicswithProgmem.h"; //stores patterns using progmem but causes board to constantly restart <<<<< no, it is not in WEMOS d1 mini
 //#include "graphicsNoprogmem.h";   //works but does not store in flash, see void setup and ccomment out imageinit or imageinitwithprogmem
-
 
 #define DATA_PIN  D2
 #define CLOCK_PIN D1
@@ -88,12 +77,9 @@ void     imageInit(void),
          IRinterrupt(void); // TRY IR
 void     imageInitwithProgmem(void);
 
-
 void setup() {
-
-
   
-  FastLED.setBrightness(BRIGHTNESS);
+  //FastLED.setBrightness(BRIGHTNESS);
   FastLED.addLeds<APA102, DATA_PIN, CLOCK_PIN, BGR, DATA_RATE_MHZ(12)>(leds, NUM_LEDS);
   FastLED.show(); // before measuring battery
   
@@ -117,7 +103,7 @@ uint8_t  imageNumber   = 0,  // Current image being displayed
 line_t   imageLines,         // Number of lines in active image
          imageLine;          // Current line number in image
 
-volatile uint16_t irCode = BTN_NONE; // Last valid IR code received TRY IR
+volatile uint16_t irCode = BTN_NONE; // Last valid IR code received
 const uint8_t PROGMEM brightness[] = {15, 31, 63, 127, 254};
 uint8_t bLevel = sizeof(brightness) - 1;
 
@@ -211,7 +197,6 @@ void loop() {
       break;
     }
 
-//#if 0 // Yep, demo images need ALL THE SPACE (see comment above)
     case PALETTE8: { // 8-bit (256 color) PROGMEM-palette-based image
       uint16_t  o;
       uint8_t   pixelNum,
@@ -237,17 +222,18 @@ void loop() {
       }
       break;
     }
-//#endif
   }
+  
  if(++imageLine >= imageLines) imageLine = 0; // Next scanline, wrap around
+ 
   IRinterrupt();
   while(((t = micros()) - lastLineTime) < lineInterval) {
     if(results.value != BTN_NONE) {
       //if(!FastLED.getBrightness()) { // If strip is off...
-        // Set brightness to last level
+      // Set brightness to last level
       //  FastLED.setBrightness(brightness[bLevel]);
-        // and ignore button press (don't fall through)
-        // effectively, first press is 'wake'
+      // and ignore button press (don't fall through)
+      // effectively, first press is 'wake'
       //} else 
       {
         switch(results.value) {
@@ -260,14 +246,18 @@ void loop() {
             FastLED.setBrightness(brightness[--bLevel]);
           break;
          case BTN_FASTER:
-          CYCLE_TIME++;
           if(lineIntervalIndex < (sizeof(lineTable) / sizeof(lineTable[0]) - 1))
            lineInterval = lineTable[++lineIntervalIndex];
           break;
          case BTN_SLOWER:
-         if(CYCLE_TIME > 0) CYCLE_TIME--;
           if(lineIntervalIndex)
            lineInterval = lineTable[--lineIntervalIndex];
+          break;
+         case BTN_CYCLE_UP:
+          if(CYCLE_TIME < 20) CYCLE_TIME++; // Soft-limit for me
+          break;
+         case BTN_CYCLE_DOWN:
+          if(CYCLE_TIME > 1) CYCLE_TIME--;
           break;
          case BTN_RESTART:
           imageNumber = 0;
