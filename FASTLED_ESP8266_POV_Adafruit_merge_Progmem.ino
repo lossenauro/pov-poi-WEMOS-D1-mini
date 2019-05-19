@@ -1,3 +1,4 @@
+// wemos arduino ver 2.5.0
 //This sketch is taking Adafruit's Supernova Poi code and is modified to use FastLed with ESP8266. 
 //Using #include graphicsNoprogmem.h and using imageinit() in void setup, the poi work but store patterns in RAM, limiting number of patterns. 
 //Using #include graphicswithprogmem.h and imageinitwithprogmem in void setup, the poi contiually restart. 
