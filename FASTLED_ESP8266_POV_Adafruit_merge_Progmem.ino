@@ -1,24 +1,32 @@
-// Use only esp8266 wemos arduino ver 2.5.0
+#include <IRremoteESP8266.h>
+#include <IRrecv.h>
+#include <IRutils.h>
+#include <ESP8266WiFi.h>
+#include "user_interface.h"
+#include <PGMSPACE.h>
+#include <Arduino.h>
+#include "FastLED.h"
+ADC_MODE(ADC_VCC);
+const uint16_t kRecvPin = D3;
+const uint16_t kMinUnknownSize = 6;
+const uint8_t kTimeout = 15;
+const uint32_t kBaudRate = 115200;
+const uint16_t kCaptureBufferSize = 256;
+
 //This sketch is taking Adafruit's Supernova Poi code and is modified to use FastLed with ESP8266. 
 //Using #include graphicsNoprogmem.h and using imageinit() in void setup, the poi work but store patterns in RAM, limiting number of patterns. 
 //Using #include graphicswithprogmem.h and imageinitwithprogmem in void setup, the poi contiually restart. 
 //Seeking help to store patterns in flash memory and increase number of patterns stored in flash.
 
-#include <IRremoteESP8266.h>
-#include <IRrecv.h>
-#include <IRutils.h>
-const uint16_t kRecvPin = D3;
-#include <PGMSPACE.h>
-#include <Arduino.h>
-#include "FastLED.h"
 #define NUM_LEDS 36
+#define FPM_SLEEP_MAX_TIME 0xFFFFFFF
 
 typedef uint16_t line_t;
 
 boolean autoCycle = true; // Set to true to cycle images by default
 uint8_t CYCLE_TIME = 10; // Time, in seconds, between auto-cycle images
-#define kRecvPin D3
-IRrecv irrecv(kRecvPin);
+
+IRrecv irrecv(kRecvPin, kCaptureBufferSize, kTimeout, true);
 decode_results results;  // Somewhere to store the results
 
 //   Button       Code         Button  Code
@@ -33,23 +41,26 @@ decode_results results;  // Somewhere to store the results
 //   LEFT:        FF10EF       7:      FFE01F
 //   RIGHT:       FF5AA5       8:      FFA857
 //                             9:      FF906F  
+
 #define BTN_BRIGHT_UP    0xFFB04F //   #
 #define BTN_BRIGHT_DOWN  0xFF6897 //   *
-#define BTN_RESTART      0xFF629D //   2
+#define BTN_RESTART      0xFF02FD //   5
 #define BTN_BATTERY      0xFF9867 //   0
 #define BTN_FASTER       0xFF18E7 //   UP
 #define BTN_SLOWER       0xFF4AB5 //   DOWN
 #define BTN_OFF          0xFFA857 //   8
-#define BTN_PATTERN_PREV 0xFF10EF //   LEFT
-#define BTN_PATTERN_NEXT 0xFF5AA5 //   RIGHT
-#define BTN_AUTOPLAY     0xFF38C7 //   ok
-#define BTN_CYCLE_DOWN   0xFF22DD //   4
-#define BTN_CYCLE_UP     0xFFC23D //   6
+#define BTN_PATTERN_PREV  0xFF10EF //   LEFT
+#define BTN_PATTERN_NEXT  0xFF5AA5 //   RIGHT
+#define BTN_AUTOPLAY      0xFF38C7 //   ok
+#define BTN_CYCLE_5       0xFFA25D //   1
+#define BTN_CYCLE_10      0xFF629D //   2
+#define BTN_CYCLE_15      0xFFE21D //   3
 #define BTN_NONE         -1
 
 CRGB leds[NUM_LEDS];
-// #include <SPI.h> // Enable this line on Pro Trinket
 
+// Old progmem def
+// #include <SPI.h> // Enable this line on Pro Trinket
 //These are attempts to change how progmem stores in memory. 
 //#define PROGMEM   ICACHE_RODATA_ATTR
 //#define ICACHE_RODATA_ATTR  __attribute__((section(".irom.text")))
@@ -67,31 +78,77 @@ CRGB leds[NUM_LEDS];
     __result;                                                                  \
 }))
 
+
 //Include one of these, but make sure to include the matching part in void setup.
 #include "graphicswithProgmem.h"; //stores patterns using progmem but causes board to constantly restart <<<<< no, it is not in WEMOS d1 mini
 //#include "graphicsNoprogmem.h";   //works but does not store in flash, see void setup and ccomment out imageinit or imageinitwithprogmem
 
+// CONFIGURABLE STUFF ------------------------------------------------------
+
+#define BATT_MIN_MV 2700 // Some headroom over battery cutoff near 2.9V
+#define BATT_MAX_MV 3900 // And little below fresh-charged battery near 4.1V
 #define DATA_PIN  D2
 #define CLOCK_PIN D1
 
 void     imageInit(void),
+         //showBatteryLevel(void),
          IRinterrupt(void); // TRY IR
 void     imageInitwithProgmem(void);
 
 void setup() {
+
+  Serial.begin(115200);
+  irrecv.enableIRIn();  // Start the receiver
+  while (!Serial)  // Wait for the serial connection to be establised.
+  delay(50);
+  Serial.println();
+  Serial.print("IRrecvDemo is now running and waiting for IR message on Pin ");
+  Serial.println(kRecvPin);
+
+  //batterylevel = ESP.getVcc;
+
+  irrecv.setUnknownThreshold(kMinUnknownSize);
   
-  //FastLED.setBrightness(BRIGHTNESS);
   FastLED.addLeds<APA102, DATA_PIN, CLOCK_PIN, BGR, DATA_RATE_MHZ(12)>(leds, NUM_LEDS);
   FastLED.show(); // before measuring battery
   
    // modify this part along with the #include graphics file part above
    // imageInitwithProgmem();    //use with graphicwithProgmem.h  <<<<<<<<<<<<<<<<<<<<<<<<<include this line and comment out imaaginit or imagewithprogmem.    // NO-NO! Use as is
-      imageInit();               //use with graphicsNoprogmem.h  <<<<<<<<<<<  NO-NO! Use as is
+   
+   showBatteryLevel();
+   imageInit();
 
-  // attachInterrupt(1, IRinterrupt, CHANGE); // IR remote interrupt
   irrecv.enableIRIn(); // Start the receiver
+  WiFiOff();           // Disable wifi
 
+}  
+
+  void showBatteryLevel(void) {
+
+  uint32_t V  = ESP.getVcc();
+  float_t v_cal = ((float)V/1.0f+1000);
+  uint16_t VV = V + 50;
+  char v_str[10];
+  dtostrf(v_cal, 5, 3, v_str);
+  sprintf(v_str,"%s V", v_str);
+  Serial.println(v_str);
+  uint8_t  lvl = (VV >= BATT_MAX_MV) ? NUM_LEDS : // Full (or nearly)
+                 (VV <= BATT_MIN_MV) ?        1 : // Drained
+                 1 + ((VV - BATT_MIN_MV) * NUM_LEDS + (NUM_LEDS / 2)) /
+                 (BATT_MAX_MV - BATT_MIN_MV + 1); // # LEDs lit (1-NUM_LEDS)
+  for(uint8_t i=0; i<lvl; i++) {                  // Each LED to batt level...
+    uint8_t g = (i * 5 + 2) / NUM_LEDS;           // Red to green
+    leds[i] = CRGB(4-g, g, 0);                        // (i, 4-g, g, 0);
+    FastLED.show();                                 // Animate a bit
+    delay(250 / NUM_LEDS);
+    Serial.println(VV);
+  }
+  delay(1500);                                    // Hold last state a moment
+  FastLED.clear();                                  // Then clear strip
+  FastLED.show();
 }
+
+
 // GLOBAL STATE STUFF ------------------------------------------------------
 
 uint32_t lastImageTime = 0L, // Time of last image change
@@ -161,6 +218,8 @@ void prevImage(void) {
   imageInit();
 }
 
+
+
 // MAIN LOOP ---------------------------------------------------------------
 
 void loop() {
@@ -168,7 +227,6 @@ void loop() {
   if(autoCycle) {
     if((t - lastImageTime) >= (CYCLE_TIME * 1000L)) nextImage();
   }
-
 
   switch(imageType) {
 
@@ -204,7 +262,7 @@ void loop() {
                *ptr = (uint8_t *)&imagePixels[imageLine * NUM_LEDS];
       for(pixelNum = 0; pixelNum < NUM_LEDS; pixelNum++) {
         o = pgm_read_byte(ptr++) * 3; // Offset into imagePalette
-      leds[pixelNum++] = CRGB(
+      leds[pixelNum] = CRGB(
           pgm_read_byte(&imagePalette[o]),
           pgm_read_byte(&imagePalette[o + 1]),
           pgm_read_byte(&imagePalette[o + 2]));
@@ -254,15 +312,26 @@ void loop() {
           if(lineIntervalIndex)
            lineInterval = lineTable[--lineIntervalIndex];
           break;
-         case BTN_CYCLE_UP:
-          if(CYCLE_TIME < 20) CYCLE_TIME++; // Soft-limit for me
+         case BTN_CYCLE_5:
+          CYCLE_TIME = 5;
           break;
-         case BTN_CYCLE_DOWN:
-          if(CYCLE_TIME > 1) CYCLE_TIME--;
+         case BTN_CYCLE_10:
+          CYCLE_TIME = 10;
+          break;
+          case BTN_CYCLE_15:
+          CYCLE_TIME = 15;
           break;
          case BTN_RESTART:
           imageNumber = 0;
           imageInit();
+          break;
+         case BTN_BATTERY:
+          FastLED.clear();
+          FastLED.show();
+          delay(250);
+          FastLED.setBrightness(255);
+          showBatteryLevel();
+          FastLED.setBrightness(pgm_read_byte(&brightness[bLevel]));
           break;
          case BTN_OFF:
           FastLED.setBrightness(0);
@@ -293,14 +362,25 @@ void loop() {
 }
 
 
-
+void WiFiOff() {
+       //Serial.println("diconnecting client and wifi");
+       //client.disconnect();
+       wifi_station_disconnect();
+       wifi_set_opmode(NULL_MODE);
+       wifi_set_sleep_type(MODEM_SLEEP_T);
+       wifi_fpm_open();
+       wifi_fpm_do_sleep(FPM_SLEEP_MAX_TIME);
+}
 
 
 void IRinterrupt() {
- 
+ irrecv.setUnknownThreshold(kMinUnknownSize);
   if (irrecv.decode(&results)) {
 //  Serial.println(results.value, HEX); // not in esp8266
     serialPrintUint64(results.value, HEX);
+
+Serial.println("");
+    
     irrecv.resume(); // Receive the next value
   }
 }
